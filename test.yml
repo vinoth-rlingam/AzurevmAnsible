@@ -1,0 +1,117 @@
+---
+- name: Installation of Azure VM
+  hosts: localhost
+  become: yes
+  vars_files:
+    - vars/vault.yml
+    - vars/vars.yml
+
+  tasks:
+    - name: Create a VM
+      azure_rm_virtualmachine:
+        resource_group: azp-rg-ext-ncsr-hpsw-pl
+        name: azp-vm-ncsr-np5-pl
+        availability_set: azp-ext-ncsr-aset-np-pl
+        vm_size: Standard_D2s_v3
+        admin_username: nswhp
+        ssh_password_enabled: false
+        ssh_public_keys:
+          - path: /home/nswhp/.ssh/authorized_keys
+            key_data: "{{key_data}}"
+        managed_disk_type: Standard_LRS
+        image:
+          offer: RHEL
+          publisher: RedHat
+          sku: 7-RAW
+          version: latest
+          register: azure_rm_virtualmachine
+
+
+    - name: Get facts for one Public IP
+      azure_rm_publicipaddress_facts:
+        resource_group: azp-rg-ext-ncsr-hpsw-pl
+        name: azp-vm-ncsr-np5-pl-ip
+      register: outputip
+
+    - name  : Debug Azure output
+      debug :
+        var : outputip
+
+
+    - name     : Add new instance to host group
+      add_host :
+        hostname  : "{{ outputip.publicipaddresses[0].ip_address }}"
+        groupname : launched
+        ansible_ssh_user: "nswhp"
+        ansible_ssh_pass: "nswhp"
+      register: hostname
+
+    - name: Output ip_address
+      debug:
+        var: hostname
+
+### Install other required in the launched VM
+- name: Install yum utilities
+  hosts: launched
+  gather_facts: no
+  tasks:
+  - name: Install yum utils
+    yum:
+      name: yum-utils
+      state: latest
+
+- name: Installation of docker and docker-compose
+  hosts: launched
+  gather_facts: no
+  vars_files:
+    - ./vars/vault.yml
+    - ./vars/vars.yml
+  become: true
+  become_method: sudo
+  tasks:
+    - name: Install device-mapper-persistent-data
+      yum:
+        name: device-mapper-persistent-data
+        state: latest
+      become: yes
+
+    - name: Install lvm2
+      yum:
+        name: lvm2
+        state: latest
+      become: yes
+
+    - name: Add Docker repo
+      get_url:
+        url: https://download.docker.com/linux/centos/docker-ce.repo
+        dest: /etc/yum.repos.d/docer-ce.repo
+      become: yes
+
+    - name: Install Docker
+      package:
+        name: docker-ce
+        state: latest
+      become: yes
+
+    - name: Start Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+      become: yes
+
+    - name: Check if Docker Compose is installed
+      command: docker-compose --version
+      register: docker_compose_check
+      ignore_errors: yes
+
+    - name: Download and install Docker Compose
+      get_url:
+        url: https://github.com/docker/compose/releases/download/1.24.1/docker-compose-Linux-x86_64
+        dest: /usr/bin/docker-compose
+        mode: 0755
+      when:
+      - docker_compose_check.msg is defined
+      - docker_compose_check.msg.find('command not found') != -1
+
+  
